@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GrokConnection,officialLoginUrl,researchResult} from '../lib/grok.mjs';
+import {GrokConnection,officialLoginUrl,researchResult,readResearchResponse,RESEARCH_TIMEOUT_MS} from '../lib/grok.mjs';
 const start=()=>({device_code:'private-device-code',user_code:'TEST-CODE',verification_uri:'https://accounts.x.ai/device',verification_uri_complete:'https://accounts.x.ai/device?user_code=TEST-CODE',expires_in:1800,interval:5});
 const tokens=()=>({access_token:'private-access-token',refresh_token:'private-refresh-token',expires_in:3600,token_type:'Bearer'});
 const answer=()=>({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'测试公开消息',annotations:[{type:'url_citation',url:'https://x.com/example/status/1',title:'原帖'}]}]}]});
@@ -43,3 +43,70 @@ test('subscription inference sends required gateway compatibility header while A
  const key=fixture((url,opts)=>{assert.equal(opts.headers['x-grok-client-version'],undefined);return Response.json({data:[{id:'grok-test'}]});});key.g.configureKey({key:'private-api-key',confirmPaid:true});await key.g.check();
 });
 test('426 is a compatibility failure and does not claim insufficient subscription credits',async()=>{const f=fixture(url=>url.endsWith('/device/code')?Response.json(start()):url.endsWith('/token')?Response.json(tokens()):new Response('sensitive-upstream-body',{status:426}));await connected(f);await assert.rejects(f.g.check(),/兼容协议/);assert.doesNotMatch(f.g.view().error,/sensitive/);assert.equal(f.calls.length,3);});
+
+test('research reports safe timeout, transport, HTTP and response errors without retrying or logging out',async()=>{
+ const cases=[
+  [()=>{throw new DOMException('private-timeout','TimeoutError');},/超时/],
+  [()=>{throw new TypeError('private-network',{cause:{code:'ENOTFOUND'}});},/网络连接失败/],
+  [()=>new Response('private-denied',{status:400}),/HTTP 400/],
+  [()=>new Response('private-invalid-json'),/格式异常/],
+  [()=>new Response('data: private-stream\n\n',{headers:{'content-type':'text/event-stream'}}),/流式响应/],
+  [()=>Response.json({status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[]}),/输出达到上限/],
+  [()=>Response.json({error:{message:'private-error'}}),/服务错误/]
+ ];
+ for(const [respond,expected] of cases){
+  const f=fixture(url=>url.endsWith('/device/code')?Response.json(start()):url.endsWith('/token')?Response.json(tokens()):url.endsWith('/models')?Response.json({data:[{id:'grok-test'}]}):respond());
+  await connected(f);await f.g.check();await assert.rejects(f.g.research({model:'grok-test',query:'公开查询',confirm:true}),expected);
+  const v=f.g.view();assert.equal(v.busy,false);assert.equal(v.loggedIn,true);assert.equal(v.result,null);assert.equal(v.requestStartedAt,0);assert.equal(f.calls.length,4);assert.doesNotMatch(JSON.stringify(v),/private-/);
+ }
+});
+
+const sse=d=>'data: '+JSON.stringify(d)+'\r\n\r\n';
+function eventResponse(text){const bytes=new TextEncoder().encode(text);return new Response(new ReadableStream({start(c){for(let i=0;i<bytes.length;i+=7)c.enqueue(bytes.slice(i,i+7));c.close();}}),{headers:{'content-type':'text/event-stream'}});}
+test('stream parser handles fragmented UTF-8, comments and progress and retains completed citations',async()=>{
+ const stages=[];
+ const text=': heartbeat\r\n\r\n'+sse({type:'response.created'})+sse({type:'response.output_item.added',item:{type:'web_search_call'}})+sse({type:'response.output_text.delta',delta:'不完整测试文本'})+sse({type:'response.completed',response:answer()});
+ const result=researchResult(await readResearchResponse(eventResponse(text),s=>stages.push(s)));
+ assert.equal(result.text,'测试公开消息');assert.equal(result.sources[0].url,'https://x.com/example/status/1');assert.deepEqual(stages,['accepted','searching','writing']);
+});
+test('partial streams, service errors, malformed data and oversized responses never become success',async()=>{
+ for(const [text,expected] of [
+  [sse({type:'response.output_text.delta',delta:'private-partial'}),/提前结束/],
+  ['data: [DONE]\n\n',/未收到完整/],
+  [sse({type:'response.failed',response:{error:{message:'private-upstream'}}}),/服务错误/],
+  ['data: private-bad-json\n\n',/格式异常/],
+  [sse({type:'response.completed',response:{status:'completed',output:[]}}),/正文/]
+ ]){await assert.rejects(readResearchResponse(eventResponse(text)),e=>expected.test(e.message)&&!e.message.includes('private-'));}
+ await assert.rejects(readResearchResponse(new Response('x'.repeat(2000001),{headers:{'content-type':'text/event-stream'}})),/过大/);
+});
+test('research uses five-minute deadline and streaming; deadline still releases busy without retries',async()=>{
+ const deadlines=[],deadline=new AbortController();let at=1_800_000_000_000,calls=0;
+ const g=new GrokConnection({now:()=>at,timeoutSignal:ms=>{deadlines.push(ms);return deadline.signal;},fetcher:async(url,opts)=>{
+  calls++;if(url.endsWith('/models'))return Response.json({data:[{id:'grok-test'}]});
+  assert.equal(JSON.parse(opts.body).stream,true);
+  return new Promise((resolve,reject)=>opts.signal.addEventListener('abort',()=>reject(opts.signal.reason),{once:true}));
+ }});
+ g.configureKey({key:'private-api-key',confirmPaid:true});await g.check();const pending=g.research({model:'grok-test',query:'公开查询',confirm:true});await new Promise(r=>setImmediate(r));
+ at+=70000;assert.equal(g.view().busy,true);assert.equal(deadlines.at(-1),300000);assert.equal(RESEARCH_TIMEOUT_MS,300000);
+ deadline.abort(new DOMException('test timeout','TimeoutError'));await assert.rejects(pending,/超时/);assert.equal(g.view().busy,false);assert.equal(calls,2);
+});
+test('cancel stops response body reading, retains credentials and never publishes partial output or retries',async()=>{
+ let reads=0;
+ const g=new GrokConnection({fetcher:async(url,opts)=>{
+  reads++;if(url.endsWith('/models'))return Response.json({data:[{id:'grok-test'}]});
+  return new Response(new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(sse({type:'response.created'})));opts.signal.addEventListener('abort',()=>c.error(opts.signal.reason),{once:true});}}),{headers:{'content-type':'text/event-stream'}});
+ }});
+ g.configureKey({key:'private-api-key',confirmPaid:true});await g.check();const pending=g.research({model:'grok-test',query:'公开查询',confirm:true});await new Promise(r=>setImmediate(r));
+ assert.equal(g.view().progress,'accepted');g.cancelResearch();await assert.rejects(pending,/已取消/);assert.equal(g.view().keyReady,true);assert.equal(g.view().result,null);assert.equal(g.view().busy,false);assert.equal(reads,2);
+});
+
+test('research exposes progress while pending and keeps previous success when a later request fails',async()=>{
+ let finish;
+ const f=fixture(url=>url.endsWith('/models')?Response.json({data:[{id:'grok-test'}]}):new Promise(resolve=>{finish=resolve;}));
+ f.g.configureKey({key:'private-api-key',confirmPaid:true});await f.g.check();
+ const first=f.g.research({model:'grok-test',query:'公开查询',confirm:true});await new Promise(r=>setImmediate(r));
+ assert.equal(f.g.view().operation,'research');assert.equal(f.g.view().busy,true);assert.ok(f.g.view().requestStartedAt>0);
+ finish(Response.json(answer()));await first;const previous=f.g.view().result;f.advance(60000);
+ const second=f.g.research({model:'grok-test',query:'公开查询',confirm:true});await new Promise(r=>setImmediate(r));finish(new Response('private-bad-response'));await assert.rejects(second,/格式异常/);
+ assert.deepEqual(f.g.view().result,previous);assert.equal(f.g.view().busy,false);assert.equal(f.calls.length,3);
+});
