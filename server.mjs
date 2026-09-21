@@ -74,7 +74,7 @@ const server=http.createServer(async(req,res)=>{
       res.setHeader('content-type',path.endsWith('.js')?'text/javascript; charset=utf-8':path.endsWith('.css')?'text/css; charset=utf-8':path.endsWith('.svg')?'image/svg+xml':'text/html; charset=utf-8');res.end(source);return;
     }
     if(!localRequestAllowed(req.headers,token,port))return json(res,403,{error:'请从本机软件窗口操作'});
-    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.1.0',grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
+    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.2.1',grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
     if(req.method!=='POST')return json(res,405,{});
     const b=await body(req);
     if(path==='/api/noir/quote')return json(res,200,await noir.quote(b));
@@ -83,6 +83,7 @@ const server=http.createServer(async(req,res)=>{
     if(path==='/api/noir/progress')return json(res,200,await noir.progress(b.taskId));
     if(path==='/api/grok/login'){await grok.login();return json(res,200,{ok:true});}
     if(path==='/api/grok/logout'){grok.logout();return json(res,200,{ok:true});}
+    if(path==='/api/grok/cancel'){grok.cancelResearch();return json(res,200,{ok:true});}
     if(path==='/api/grok/key'){grok.configureKey(b);return json(res,200,{ok:true});}
     if(path==='/api/grok/check'){await grok.check();return json(res,200,{ok:true});}
     if(path==='/api/grok/research'){await grok.research(b);return json(res,200,{ok:true});}
