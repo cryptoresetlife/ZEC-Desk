@@ -1,0 +1,36 @@
+name: macOS launcher verification
+on:
+  workflow_run:
+    workflows: ['macOS release']
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    if: github.event.workflow_run.conclusion == 'success'
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: macOS-${{ matrix.arch }}
+          path: downloaded
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Verify packaged launcher without opening a browser or wallet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir extracted
+          ditto -x -k downloaded/*.zip extracted
+          for app in extracted/*/"ZEC Desk.app"; do test -d "$app"; done
+          "$app/Contents/Resources/app/runtime/node" scripts/check-macos-launcher.mjs "$(dirname "$app")"
