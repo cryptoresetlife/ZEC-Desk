@@ -1,35 +1,65 @@
 diff --git a/zingo-cli/src/lib.rs b/zingo-cli/src/lib.rs
-index 09498ed..f4963e7 100644
+index a3803995..80ca1589 100644
 --- a/zingo-cli/src/lib.rs
 +++ b/zingo-cli/src/lib.rs
-@@ -605,6 +605,30 @@ pub(crate) fn startup(filled_template: &ConfigTemplate) -> std::io::Result<Comma
+@@ -55,6 +55,7 @@ pub fn build_clap_app() -> clap::Command {
+     use clap::Subcommand as _;
  
- fn dispatch_command_or_start_interactive(cli_config: &ConfigTemplate) -> std::io::Result<()> {
-     let ch = startup(cli_config)?;
-+    // ZEC Desk transport: bounded JSON lines over a private child-process pipe.
-+    // Wallet/transaction construction stays in the pinned upstream implementation.
-+    if let ModeOfOperation::Command { name, .. } = &cli_config.mode {
-+        if name == "desk_stdio" {
-+            use std::io::{BufRead, Write};
-+            println!("ZEC_DESK_READY");
-+            std::io::stdout().flush()?;
-+            for line in std::io::stdin().lock().lines() {
-+                let line = line?;
-+                if line.len() > 16384 { break; }
-+                let request = match json::parse(&line) { Ok(v) => v, Err(_) => break };
-+                let cmd = request["command"].as_str().unwrap_or("");
-+                let allowed = ["info", "height", "addresses", "balance", "spendable_balance", "sync", "send", "confirm", "save", "quit", "recovery_info", "value_transfers"];
-+                if !allowed.contains(&cmd) { break; }
-+                let args: Vec<String> = request["args"].members().filter_map(|v| v.as_str().map(str::to_owned)).collect();
-+                ch.transmitter.send((cmd.to_string(), args)).map_err(std::io::Error::other)?;
-+                let response = ch.receiver.recv().map_err(std::io::Error::other)?;
-+                println!("ZEC_DESK_JSON:{}", json::object! { "id" => request["id"].clone(), "result" => response }.dump());
-+                std::io::stdout().flush()?;
-+                if cmd == "quit" { break; }
-+            }
-+            return Ok(());
-+        }
+     let session_options = clap::Command::new("Zingo CLI").version(version::VERSION)
++            .arg(Arg::new("desk-stdio").long("desk-stdio").hide(true).action(clap::ArgAction::SetTrue))
+             .disable_help_subcommand(true)
+             .arg(Arg::new("nosync")
+                 .help("By default, zingo-cli will sync the wallet at startup. Pass --nosync to prevent the automatic sync at startup.")
+@@ -2055,6 +2056,7 @@ pub fn help_output(matches: &clap::ArgMatches) -> Option<String> {
+ /// The caller (the binary entry point) is responsible for parsing arguments,
+ /// handling the help short-circuit, process-level setup, and error reporting.
+ pub fn run_cli(matches: clap::ArgMatches) -> std::io::Result<ExitCode> {
++    let desk_stdio = matches.get_flag("desk-stdio");
+     let mode = get_mode_of_operation(&matches);
+     if let Operations::NonInteractive { command } = &mode
+         && let Err(refusal) = command.validate_deferred_grammar()
+@@ -2065,7 +2067,43 @@ pub fn run_cli(matches: clap::ArgMatches) -> std::io::Result<ExitCode> {
+     let communications = get_communications(&matches)?;
+     let cli_config =
+         CliConfigTemplate::fill(mode, communications, matches).map_err(std::io::Error::other)?;
+-    dispatch_command_or_start_interactive(&cli_config)
++    if desk_stdio {
++        let ch = startup(&cli_config)?;
++        desk_transport(ch)
++    } else {
++        dispatch_command_or_start_interactive(&cli_config)
 +    }
-     match &cli_config.mode {
-         ModeOfOperation::Interactive => start_interactive(cli_config, ch),
-         ModeOfOperation::Command { name, args } => {
++}
++
++fn desk_transport(ch: CommandChannel) -> std::io::Result<ExitCode> {
++    use std::io::{BufRead, Write};
++    const REQUEST_LIMIT: usize = 16384;
++    const ALLOWED: &[&str] = &["info", "height", "addresses", "balance", "spendable_balance", "sync", "send", "confirm", "save", "quit", "recovery_info", "value_transfers"];
++    println!("ZEC_DESK_READY");
++    std::io::stdout().flush()?;
++    let mut input = std::io::stdin().lock();
++    loop {
++        let mut line = Vec::new();
++        let count = std::io::Read::take(&mut input, (REQUEST_LIMIT + 1) as u64).read_until(b'\n', &mut line)?;
++        if count == 0 { break; }
++        if count > REQUEST_LIMIT { return Err(std::io::Error::other("request too large")); }
++        let line = std::str::from_utf8(&line).map_err(std::io::Error::other)?;
++        let request = json::parse(line).map_err(std::io::Error::other)?;
++        let cmd = request["command"].as_str().unwrap_or("");
++        if !ALLOWED.contains(&cmd) { return Err(std::io::Error::other("command refused")); }
++        let tokens: Vec<String> = std::iter::once(cmd.to_owned()).chain(request["args"].members().filter_map(|v| v.as_str().map(str::to_owned))).collect();
++        let response = match commands::parse_command_tokens(&tokens) {
++            Ok(command) => {
++                ch.transmitter.send(Request::Command(command)).map_err(std::io::Error::other)?;
++                ch.receiver.recv().map_err(std::io::Error::other)?.unwrap_or_else(|error| error)
++            }
++            Err(error) => format!("Error: {error}"),
++        };
++        println!("ZEC_DESK_JSON:{}", json::object! { "id" => request["id"].clone(), "result" => response }.dump());
++        std::io::stdout().flush()?;
++        if cmd == "quit" { break; }
++    }
++    Ok(ExitCode::SUCCESS)
+ }
+ 
+ #[cfg(test)]
