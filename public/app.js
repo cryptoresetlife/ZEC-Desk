@@ -20,6 +20,12 @@ bind('#scan',()=>api('scan',{}));bind('#stopscan',()=>api('scan/stop',{}));
 bind('#savesources',()=>api('sources',{urls:$('#sources').value.split('\n').map(s=>s.trim()).filter(Boolean)}));
 bind('#createwallet',async()=>{dialog('创建独立自动签名钱包','<p>将在本机 Ubuntu 中创建新的 ZEC 热钱包。它与 Noir 的资金和助记词独立。创建后请立即备份，再充值。</p><p>自动任务启动后，此钱包可以在预算内付款，无需弹出插件确认。</p>',()=>api('wallet/start',{create:true}),'创建新钱包');});
 bind('#startwallet',()=>api('wallet/start',{create:false}));bind('#refreshwallet',()=>api('wallet/status',{}));
+bind('#walletaddresscopy',async()=>{
+ const address=$('#address').value;
+ if(!state?.wallet?.ready||!address||!state.wallet.addresses?.includes(address))throw Error('请先打开独立钱包并选择地址');
+ try{await navigator.clipboard.writeText(address);say('已复制独立钱包充值地址，请在转出钱包核对完整地址。');}
+ catch{dialog('复制独立钱包充值地址','<p>当前窗口无法自动写入剪贴板。下方已选中完整地址，请按 Ctrl+C 复制。</p><label>完整充值地址<input id="walletcopyfallback" readonly value="'+esc(address)+'"></label>',null);$('#walletcopyfallback').focus();$('#walletcopyfallback').select();say('请在弹窗中手动复制地址');}
+});
 bind('#backup',async()=>{dialog('本机查看备份','<p>下一步会在本机显示助记词。请离线保管，不要发到聊天、GitHub 或截图中。</p>',async()=>{const version=dialogVersion,d=await api('wallet/backup',{});if(version!==dialogVersion||!$('#dialog').open)return;const recovery=typeof d.recovery==='string'?d.recovery:JSON.stringify(d.recovery,null,2);if(!recovery?.trim()||['null','{}','[]'].includes(recovery.trim()))throw Error('未取得有效备份内容，请关闭后重新查看；不要确认已备份');dialog('备份独立钱包','<pre>'+esc(recovery)+'</pre><p>请记下完整助记词与生日区块。关闭后清除本窗口显示。</p>',()=>api('wallet/backed-up',{confirm:true}),'已离线保存备份');},'在本机显示');});
 bind('#history',async()=>{const d=await api('wallet/history',{});dialog('本地钱包交易记录','<pre>'+esc(JSON.stringify(d.history,null,2))+'</pre>');});
 bind('#preview',async()=>{preview=await api('preview',{projectId:'zaddr',address:$('#address').value,quantity:Number($('#quantity').value),maxPrice:$('#maxprice').value.trim(),maxFee:$('#maxfee').value.trim(),expiresAt:new Date($('#expiry').value).getTime()});const c=preview.config;$('#previewbox').hidden=false;$('#previewbox').innerHTML=`<h3>启动前核对</h3><p>${esc(preview.notice)}</p><p>接收地址：<code>${esc(c.address)}</code></p><p>数量 ${c.quantity} · 每枚上限 ${esc(c.maxPrice)} ZEC<br>每笔手续费上限 ${esc(c.maxFee)} ZEC<br><b>总预算上限 ${preview.budget} ZEC</b><br>任务截止 ${esc(when(c.expiresAt))}</p><p>官网 Public 时间：${esc(when(preview.round.start))}</p><button id="arm" class="danger">确认预算，启动全自动 mint</button>`;bind('#arm',async()=>{await api('arm',{previewId:preview.id,confirm:true});$('#previewbox').hidden=true;preview=null;say('任务已启动，等待 Public。电脑请保持开机且不休眠。');});});
@@ -80,6 +86,7 @@ function paint(s){
  $('#walletstate').textContent=s.wallet.ready?(s.backedUp?'已连接 · 已备份':'已连接 · 未备份'):'未启动';
  const addresses=s.wallet.addresses||[],selected=$('#address').value;
  if(JSON.stringify(addresses)!==$('#address').dataset.list){$('#address').innerHTML=addresses.length?addresses.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join(''):'<option value="">先启动钱包</option>';$('#address').dataset.list=JSON.stringify(addresses);if(addresses.includes(selected))$('#address').value=selected;}
+ $('#walletaddresscopy').disabled=!s.wallet.ready||!addresses.includes($('#address').value);
  $('#walletfunds').textContent='可用屏蔽余额：'+(Number.isSafeInteger(s.wallet.spendable)?s.wallet.spendable/1e8+' ZEC':'—');
  const syncProgress=typeof s.wallet.sync?.percentage_total_outputs_scanned==='number'?s.wallet.sync.percentage_total_outputs_scanned:null;
  const syncText=s.wallet.syncError?s.wallet.syncError+(s.wallet.syncRetryAt?' · 下次重试 '+when(s.wallet.syncRetryAt):''):s.wallet.syncComplete?'钱包扫描已完成；预检时还会核对最新区块和可用余额。':syncProgress!==null?'钱包扫描进度：'+syncProgress.toFixed(1)+'% · 已扫描 '+(s.wallet.sync.total_blocks_scanned||0)+' 个区块 · 每 20 秒刷新。':'钱包尚未连接。连接后自动同步。';
