@@ -16,8 +16,8 @@ From the repository root in PowerShell:
 
 ```powershell
 $csc = "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
-& $csc /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll '/win32icon:ZEC Desk.ico' '/out:ZEC Desk.exe' launcher/ZecDeskLauncher.cs
-& $csc /nologo /target:winexe /platform:x64 /main:ZecDeskWindow /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:Microsoft.Web.WebView2.Core.dll /reference:Microsoft.Web.WebView2.WinForms.dll '/win32icon:ZEC Desk.ico' /out:ZecDeskWindow.exe launcher/ZecDeskLauncher.cs launcher/ZecDeskWindow.cs
+& $csc /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll '/win32icon:ZEC Desk.ico' '/out:ZEC Desk.exe' launcher\ZecDeskLauncher.cs
+& $csc /nologo /target:winexe /platform:x64 /main:ZecDeskWindow /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:Microsoft.Web.WebView2.Core.dll /reference:Microsoft.Web.WebView2.WinForms.dll /resource:launcher\task-autofill.js,task-autofill.js '/win32icon:ZEC Desk.ico' /out:ZecDeskWindow.exe launcher\ZecDeskLauncher.cs launcher\ZecDeskWindow.cs launcher\ProjectTaskWindow.cs
 ```
 
 Copy the official Windows Node executable into `runtime/node.exe`, with its license as `runtime/NODE-LICENSE.txt`.
@@ -26,23 +26,25 @@ Copy the official Windows Node executable into `runtime/node.exe`, with its lice
 
 Upstream: https://github.com/zingolabs/zingolib
 
-Pinned source: tag `zingolib_v5.0.0`, commit `9e897f8b2fc5f12a99604f2533164af62af7d3ac`. Use the upstream Rust 1.90 toolchain. The CLI package version is 0.4.0 and its displayed library version can differ.
+Pinned source: tag `zingolib_v6.0.0`, commit `c6381534f802b1022041beda4b01c106ad132329`. Use the upstream Rust 1.97.1 toolchain. The CLI package is 0.4.0, the wallet library is 6.0.0. Keep default features and the NU6.3 configuration. This release uses zcash_primitives 0.30.0 for Ironwood transactions.
 
 ```sh
 git clone https://github.com/zingolabs/zingolib.git
 cd zingolib
-git checkout 9e897f8b2fc5f12a99604f2533164af62af7d3ac
+git checkout c6381534f802b1022041beda4b01c106ad132329
 git apply /path/to/ZEC-Desk/native/desk-stdio.patch
-RUSTFLAGS="--remap-path-prefix=$PWD=/build/source --remap-path-prefix=$HOME=/build/home" cargo build --locked --release -p zingo-cli
+export RUSTFLAGS="--cfg zcash_unstable=\"nu6.3\" --remap-path-prefix=$PWD=/build/source --remap-path-prefix=$HOME=/build/home"
+cargo build --locked --release -p zingo-cli
+cargo build --locked --release --manifest-path zingo-netutils/Cargo.toml --features nym --bin nym-proxy
 ```
 
-Copy `target/release/zingo-cli` to `native/zingo-deskwallet`, alongside `native/ZINGO-LICENSE.txt`. Validate dependencies with `ldd` in Ubuntu. The release binary has had embedded personal build-home prefixes normalized with equal-length replacement; only source-path strings were changed. Future builds should use the compiler path remapping above.
+Copy `target/release/zingo-cli` to `native/zingo-deskwallet`, and `zingo-netutils/target/release/nym-proxy` to `native/nym-proxy`, alongside `native/ZINGO-LICENSE.txt`. Both binaries are required. Validate dependencies with `ldd` in Ubuntu. Generate `native/SHA256SUMS.txt` for both binaries and the patch. Compiler path remapping excludes personal build paths. Include upstream dependency licenses when redistributing.
 
-`desk_stdio` adds newline-delimited JSON on a child-process pipe, with a restricted command list and `ZEC_DESK_JSON:` response prefix. It does not expose a wallet TCP port or rewrite cryptographic algorithms. Wallet storage is outside the application folder under `~/.local/share/zec-desk/wallet-mainnet` in the WSL distribution named `Ubuntu`.
+`--desk-stdio` adds bounded newline-delimited JSON on a private child-process pipe, with a restricted command list and `ZEC_DESK_JSON:` response prefix. Commands use upstream parsing and dispatch. The Nym companion manages its own loopback transport endpoints. Wallet storage is outside the application folder under `~/.local/share/zec-desk/wallet-mainnet` in the WSL distribution named `Ubuntu`. Preserve an opaque private backup before upgrading existing wallets.
 
 ## Release packaging
 
-Use `node scripts/package.mjs` after building binaries. This copies only explicitly allowed source/runtime files into a new `release/ZEC-Desk-v0.1.0-Windows-x64` directory. It refuses to overwrite an existing release. Audit the output, then ZIP that directory and publish its SHA-256 hash.
+Use `node scripts/package.mjs` after building binaries. This copies only explicitly allowed source/runtime files into a new `release/ZEC-Desk-v0.2.0-Windows-x64` directory. It refuses to overwrite an existing release. Audit the output, then ZIP that directory and publish its SHA-256 hash.
 
 Never copy `data/`, WebView2 profiles, logs, wallet files, local configuration, build caches or environment files. Do not redistribute NFT artwork caches without permission. Public project URLs and OAuth client identifiers in source are protocol configuration, not personal credentials.
 
@@ -53,3 +55,5 @@ Device authorization uses `auth.x.ai`. Subscription traffic uses `cli-chat-proxy
 Reference implementations: https://github.com/lidge-jun/opencodex and https://github.com/RongleCat/grok-go . Credentials and research results stay in process memory. No model request is triggered just by logging in. Manual research is limited to three search tool calls and 2400 output tokens, which is not a monetary spending cap.
 
 Fixture tests cover budget checks, uncertain payment handling, parser limits, source validation and authentication isolation. Tests do not establish real mint success or future service compatibility.
+
+v0.2.0 validation: 100 automated tests; disposable-wallet mainnet synchronization reached 100%, including Ironwood outputs. The wrapper uses v6 height syntax and requires every native scan range to be fully scanned before payment readiness. No funded mint is part of release testing. Backup-modal tests cover stale close events and late recovery responses. Noir tests cover account changes, explicit consent, single-use requests and uncertain results.

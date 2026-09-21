@@ -15,3 +15,7 @@ native/zingo-deskwallet
 public/zaddr/
 node_modules/
 release/
+
+native/nym-proxy
+native/SHA256SUMS.txt
+.zingo-cli/
