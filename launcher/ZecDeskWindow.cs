@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
+using System.Web.Script.Serialization;
+using System.Collections.Generic;
 
 // Own top-level window: taskbar identity and icon belong to ZEC Desk, not Edge.
 class ZecDeskWindow : Form {
@@ -24,6 +26,14 @@ class ZecDeskWindow : Form {
   static void External(string value){
     Uri uri;if(!Uri.TryCreate(value,UriKind.Absolute,out uri)||uri.Scheme!="https"||!String.IsNullOrEmpty(uri.UserInfo))return;
     try{Process.Start(new ProcessStartInfo(uri.AbsoluteUri){UseShellExecute=true});}catch{MessageBox.Show("无法打开链接，请在浏览器中打开对应项目页面。","ZEC Desk");}
+  }
+  static void OpenNoirChrome(){
+    string chrome=null;
+    foreach(var baseDir in new[]{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)}){
+      var candidate=Path.Combine(baseDir,"Google","Chrome","Application","chrome.exe");if(File.Exists(candidate)){chrome=candidate;break;}
+    }
+    if(chrome==null){MessageBox.Show("未找到 Chrome。请在安装 Noir 的 Chrome 地址栏打开 http://localhost:8793/#noirmint","ZEC Desk");return;}
+    Process.Start(new ProcessStartInfo(chrome,"http://localhost:8793/#noirmint"){UseShellExecute=true});
   }
   ZecDeskWindow(){
     Text="ZEC Desk";Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -50,6 +60,18 @@ class ZecDeskWindow : Form {
       view.CoreWebView2.Settings.IsPasswordAutosaveEnabled=false;
       view.CoreWebView2.Settings.IsGeneralAutofillEnabled=false;
       view.CoreWebView2.Settings.AreDevToolsEnabled=false;
+      view.CoreWebView2.WebMessageReceived+=(s,e)=>{
+        if(!IsHome(e.Source))return;
+        try{
+          if(e.WebMessageAsJson.Length>8000)return;
+          var message=new JavaScriptSerializer().Deserialize<Dictionary<string,string>>(e.WebMessageAsJson);
+          if(message==null||!message.ContainsKey("type"))return;
+          if(message["type"]=="noir.open"){OpenNoirChrome();return;}
+          if(message["type"]!="project-task.open")return;
+          ProjectTaskWindow.OpenTask(message["url"],message["name"],message["address"]);
+          view.CoreWebView2.PostWebMessageAsJson("{\"type\":\"project-task.opened\"}");
+        }catch(Exception){view.CoreWebView2.PostWebMessageAsJson("{\"type\":\"project-task.error\",\"message\":\"任务窗口未打开，请核对官网地址和钱包，或关闭多余任务窗口。\"}");}
+      };
       view.CoreWebView2.NavigationStarting+=(s,e)=>{if(!IsHome(e.Uri)){e.Cancel=true;External(e.Uri);}};
       view.CoreWebView2.NewWindowRequested+=(s,e)=>{e.Handled=true;if(e.IsUserInitiated)External(e.Uri);};
       view.CoreWebView2.PermissionRequested+=(s,e)=>{e.State=CoreWebView2PermissionState.Deny;};
