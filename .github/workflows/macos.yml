@@ -1,0 +1,107 @@
+name: macOS release
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/macos.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verified Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=24.21.0
+          archive="node-v${version}-darwin-${{ matrix.arch }}.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 -O "https://nodejs.org/dist/v${version}/$archive"
+          curl --fail --location --retry 3 -O "https://nodejs.org/dist/v${version}/SHASUMS256.txt"
+          grep "  $archive$" SHASUMS256.txt | shasum -a 256 -c -
+          tar -xzf "$archive"
+          mkdir -p "$GITHUB_WORKSPACE/runtime"
+          cp "node-v${version}-darwin-${{ matrix.arch }}/bin/node" "$GITHUB_WORKSPACE/runtime/node"
+          cp "node-v${version}-darwin-${{ matrix.arch }}/LICENSE" "$GITHUB_WORKSPACE/runtime/NODE-LICENSE.txt"
+          echo "$GITHUB_WORKSPACE/runtime" >> "$GITHUB_PATH"
+      - name: Application tests
+        run: node --test tests/*.test.mjs
+      - name: Build pinned native wallet
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf cmake pkg-config
+          git clone --filter=blob:none https://github.com/zingolabs/zingolib.git "$RUNNER_TEMP/zingolib"
+          cd "$RUNNER_TEMP/zingolib"
+          git checkout c6381534f802b1022041beda4b01c106ad132329
+          git apply "$GITHUB_WORKSPACE/native/desk-stdio.patch"
+          rustup toolchain install 1.97.1 --profile minimal
+          export RUSTFLAGS="--cfg zcash_unstable=\"nu6.3\" --remap-path-prefix=$PWD=/build/source --remap-path-prefix=$HOME=/build/home --remap-path-prefix=$RUNNER_TEMP=/build/tmp"
+          cargo build --locked --release -p zingo-cli
+          cargo build --locked --release --manifest-path zingo-netutils/Cargo.toml --features nym --bin nym-proxy
+          cp target/release/zingo-cli "$GITHUB_WORKSPACE/native/zingo-deskwallet"
+          cp zingo-netutils/target/release/nym-proxy "$GITHUB_WORKSPACE/native/nym-proxy"
+          cd "$GITHUB_WORKSPACE"
+          clang -Wall -Wextra -Werror -O2 launcher/wallet-lock.c -o native/wallet-lock
+          for bin in native/zingo-deskwallet native/nym-proxy native/wallet-lock; do
+            otool -L "$bin"
+            if otool -L "$bin" | grep -E '/opt/homebrew|/usr/local|/Users/runner|/private/'; then exit 1; fi
+          done
+      - name: Package and test clean macOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/package-macos.mjs
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json')).version")
+          name="ZEC-Desk-v${version}-macOS-${{ matrix.arch }}"
+          node scripts/smoke-macos.mjs "release/$name"
+          node scripts/audit-macos.mjs "release/$name"
+          ditto -c -k --sequesterRsrc --keepParent "release/$name" "release/$name.zip"
+          mkdir "$RUNNER_TEMP/extracted"
+          ditto -x -k "release/$name.zip" "$RUNNER_TEMP/extracted"
+          node scripts/audit-macos.mjs "$RUNNER_TEMP/extracted/$name"
+          codesign --verify --deep --strict "$RUNNER_TEMP/extracted/$name/ZEC Desk.app"
+          cd release
+          shasum -a 256 "$name.zip" > "SHA256SUMS-macOS-${{ matrix.arch }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macOS-${{ matrix.arch }}
+          path: |
+            release/*.zip
+            release/SHA256SUMS-*.txt
+          if-no-files-found: error
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macOS-*
+          merge-multiple: true
+          path: macos-assets
+      - name: Create reviewed-source draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json')).version")
+          gh release create "v$version" --draft --prerelease --target "$GITHUB_SHA" --title "ZEC Desk v$version · macOS 预览版" --notes-file MACOS.md macos-assets/*
