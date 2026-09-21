@@ -1,0 +1,17 @@
+data/
+build-cache/
+runtime/
+native/zingo-deskwallet
+*.exe
+*.dll
+*.pdb
+*.zip
+*.log
+.env*
+*.pem
+*.key
+*wallet*.dat
+*journal*.json
+public/zaddr/
+node_modules/
+release/

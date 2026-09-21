@@ -1,0 +1,19 @@
+{
+  "name": "zec-desk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "description": "Local Zcash NFT monitoring and ZADDR Public mint workspace",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cryptoresetlife/ZEC-Desk.git"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
