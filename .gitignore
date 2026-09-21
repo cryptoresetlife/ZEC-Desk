@@ -19,3 +19,6 @@ release/
 native/nym-proxy
 native/SHA256SUMS.txt
 .zingo-cli/
+
+native/wallet-lock
+*.app/

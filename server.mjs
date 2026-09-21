@@ -6,6 +6,7 @@ import {join,dirname,resolve} from 'node:path';
 import {randomBytes,createHash} from 'node:crypto';
 import {Zaddr} from './lib/zaddr.mjs';
 import {Wallet} from './lib/wallet.mjs';
+import {appDataPath} from './lib/platform.mjs';
 import {localOrigin,localRequestAllowed} from './lib/local-origin.mjs';
 import {NoirPayments} from './lib/noir-payments.mjs';
 import {Engine,validateConfig,zats} from './lib/engine.mjs';
@@ -16,7 +17,7 @@ import {SocialScanner} from './lib/social.mjs';
 import {GrokConnection} from './lib/grok.mjs';
 const root=dirname(fileURLToPath(import.meta.url)),port=Number(process.env.ZEC_DESK_PORT||8793),origin=`http://127.0.0.1:${port}`,token=randomBytes(32).toString('hex');
 if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Invalid ZEC_DESK_PORT');
-const data=join(root,'data');await fs.mkdir(data,{recursive:true});
+const data=appDataPath(root);await fs.mkdir(data,{recursive:true,mode:0o700});
 let journal={version:1,tasks:[],backedUp:false,sources:[]};
 try{journal=JSON.parse(await fs.readFile(join(data,'journal.json'),'utf8'));if(journal.version!==1||!Array.isArray(journal.tasks)||!Array.isArray(journal.sources))throw new Error('schema');}catch(e){if(e.code!=='ENOENT')throw new Error('本地记录损坏，已停止启动以防重复付款。请保留 data 目录并检查。');}
 let writes=Promise.resolve();
@@ -74,7 +75,7 @@ const server=http.createServer(async(req,res)=>{
       res.setHeader('content-type',path.endsWith('.js')?'text/javascript; charset=utf-8':path.endsWith('.css')?'text/css; charset=utf-8':path.endsWith('.svg')?'image/svg+xml':'text/html; charset=utf-8');res.end(source);return;
     }
     if(!localRequestAllowed(req.headers,token,port))return json(res,403,{error:'请从本机软件窗口操作'});
-    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.2.2',grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
+    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.3.0',platform:process.platform,grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
     if(req.method!=='POST')return json(res,405,{});
     const b=await body(req);
     if(path==='/api/noir/quote')return json(res,200,await noir.quote(b));

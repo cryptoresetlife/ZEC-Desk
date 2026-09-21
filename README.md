@@ -2,7 +2,7 @@
 
 Zcash NFT 项目监控、早期线索发现与 ZADDR Public mint 本地工作台。复古桌面界面，MIT 开源。
 
-**Windows 下载：[Releases](https://github.com/cryptoresetlife/ZEC-Desk/releases)**。下载 Windows ZIP，完整解压后双击 **ZEC Desk.exe**。不要只移动 EXE。
+**Windows 下载：[Releases](https://github.com/cryptoresetlife/ZEC-Desk/releases)**。下载 Windows ZIP，完整解压后双击 **ZEC Desk.exe**。不要只移动 EXE。macOS 下载对应芯片的 ZIP，解压后打开 ZEC Desk.app，详见 [Mac 使用说明](MACOS.md)。
 
 ## 功能
 
@@ -12,9 +12,9 @@ Zcash NFT 项目监控、早期线索发现与 ZADDR Public mint 本地工作台
 - 早期项目与资格线索：项目官网检查、ZECMAP 资格页面、待开售计划。
 - X 搜索热度与官推线索：需自行配置可用 X API Bearer Token，可设置扫描频率与请求上限。
 - Grok 手动研究：官方设备授权登录，或自行填写 xAI API Key；结果提供来源链接；流式显示搜索进度，最长等待 5 分钟，可取消本次查询。
-- 独立本地 Zcash 钱包：余额、同步、备份、交易记录。
+- 独立本地 Zcash 钱包：余额、同步、备份、交易记录、地址复制；macOS 使用原生钱包组件，无需 WSL。
 - Noir 插件付款：在 Chrome 连接本机页面，等待 ZADDR Public 后唤起插件，用户确认付款。
-- 项目任务工作台：在软件中打开项目页面，辅助填写选定的公开钱包地址。
+- 项目任务工作台：Windows 内置窗口辅助填写公开地址；macOS 在浏览器打开任务并手动粘贴地址。
 - **ZADDR Public 自动 mint**：选择钱包、备份、预检并确认数量和预算后，等待官网开放再执行；付款状态不明时停止，避免重复付款。
 
 ## 快速使用
