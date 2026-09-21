@@ -4,8 +4,8 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const when=t=>t?new Date(t).toLocaleString('zh-CN',{timeZoneName:'short'}):'未设置';
 let state=null,preview=null,dialogAction=null,dialogVersion=0,mutating=false;
 function say(t){$('#message').hidden=!t;$('#message').textContent=t||'';}
-async function api(path,data){const r=await fetch('/api/'+path,{method:data===undefined?'GET':'POST',...(data===undefined?{signal:AbortSignal.timeout(8000)}:{}),headers:{'x-zec-desk':token,'content-type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const d=await r.json();if(!r.ok)throw new Error(d.error||'操作失败');return d;}
-function bind(id,fn){$(id).onclick=async()=>{if(mutating&&!['#stop','#groklogout'].includes(id))return;const btn=$(id);mutating=true;btn.disabled=true;say('处理中…');try{await fn();if($('#message').textContent==='处理中…')say('操作完成');await refresh();}catch(e){say(e.message);}finally{mutating=false;btn.disabled=false;}};}
+async function api(path,data){let r;try{r=await fetch('/api/'+path,{method:data===undefined?'GET':'POST',...(data===undefined?{signal:AbortSignal.timeout(8000)}:path.startsWith('grok/')?{signal:AbortSignal.timeout(path==='grok/research'?330000:75000)}:{}),headers:{'x-zec-desk':token,'content-type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});}catch(e){if(path.startsWith('grok/')&&e.name==='TimeoutError')throw Error('等待 Grok 查询超时；后台状态会继续刷新，请勿连续提交，已发出的查询可能计入额度');throw e;}const d=await r.json();if(!r.ok)throw new Error(d.error||'操作失败');return d;}
+function bind(id,fn){$(id).onclick=async()=>{if(mutating&&!['#stop','#groklogout','#grokcancel'].includes(id))return;const btn=$(id);mutating=true;btn.disabled=true;say('处理中…');try{await fn();if($('#message').textContent==='处理中…')say('操作完成');await refresh();}catch(e){say(e.message);}finally{mutating=false;btn.disabled=false;}};}
 function dialog(title,content,action,confirm='确认'){dialogVersion++;$('#dialogtitle').textContent=title;$('#dialogbody').innerHTML=content;dialogAction=action;$('#dialogconfirm').textContent=confirm;$('#dialogconfirm').hidden=!action;if(!$('#dialog').open)$('#dialog').showModal();}
 function clearDialog(){dialogVersion++;$('#dialogbody').textContent='';dialogAction=null;}
 function closeDialog(){clearDialog();$('#dialog').close();}
@@ -138,17 +138,22 @@ $('#sociallist').addEventListener('click',async e=>{const btn=e.target.closest('
 
 function paintGrok(g){
  if(!g)return;
+ const currentBackend=g.researchTimeoutMs===300000;
  const mode=g.mode==='key'?'独立 API Key · 按用量计费':'Grok 订阅通道 · 消耗账号额度';
- $('#grokstatus').textContent=mode+' · '+(g.login?'等待你在官方页面授权':g.loggedIn?'已登录；订阅等级未核实':g.keyReady?'已填写密钥':'未连接')+(g.busy?' · 请求处理中':'')+(g.checkedAt?' · 模型列表读取于 '+when(g.checkedAt)+'（不代表搜索权限已验证）':'')+(g.error?' · '+g.error:'');
+ const stages={connecting:'正在连接搜索服务',connected:'已连接，等待搜索进度',accepted:'服务已接收，正在处理',searching:'正在搜索公开帖子',writing:'正在整理搜索结果',cancelling:'正在取消本次查询'};
+ const pending=g.busy?(g.operation==='research'?(stages[g.progress]||'正在搜索公开项目'):'正在连接 Grok')+(g.requestStartedAt?' · 已等待 '+Math.max(0,Math.floor((Date.now()-g.requestStartedAt)/1000))+' 秒':''):'';
+ $('#grokstatus').textContent=mode+' · '+(g.login?'等待你在官方页面授权':g.loggedIn?'已登录；订阅等级未核实':g.keyReady?'已填写密钥':'未连接')+(pending?' · '+pending:'')+(g.checkedAt?' · 模型列表读取于 '+when(g.checkedAt)+'（不代表搜索权限已验证）':'')+(g.error?' · '+g.error:'');
  $('#grokstatus').className='health '+(g.error?'warning':'');
  setCards('#grokdevice',g.login?'<p>登录码：<strong class="login-code">'+esc(g.login.code)+'</strong> · 有效至 '+esc(when(g.login.expiresAt))+'</p><a class="grok-login-link" href="'+esc(g.login.url)+'" target="_blank" rel="noreferrer">打开 xAI 官方授权页面 ↗</a><p>请核对登录码，在官方页面完成登录。软件不接收你的推特密码或 Cookie；授权后本页会自动更新。若未识别订阅，可在 Grok 设置 → Account 关联 X 账号。</p>':'');
  const old=$('#grokmodel').value,models=JSON.stringify(g.models);
  if($('#grokmodel').dataset.models!==models){$('#grokmodel').innerHTML='<option value="">请选择可用模型</option>'+g.models.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('');$('#grokmodel').dataset.models=models;if(g.models.includes(old))$('#grokmodel').value=old;else {const first=g.models.find(m=>/grok/i.test(m)&&!/image|video|imagine|vision|audio/i.test(m));if(first)$('#grokmodel').value=first;}}
- $('#groklogin').disabled=g.busy||!!g.login;$('#grokcheck').disabled=g.busy||(!g.loggedIn&&!g.keyReady);$('#grokrun').disabled=g.busy||!g.models.length||Date.now()<g.nextRun;$('#grokkey').disabled=g.busy;
- const r=g.result;setCards('#grokresult',r?'<h3>最近查询结果</h3><small>'+esc(when(r.at))+' · '+esc(r.model)+' · '+(r.mode==='key'?'API Key':'订阅通道')+'</small><div class="grok-answer">'+esc(r.text)+'</div><h4>返回的引用来源</h4>'+(r.sources.length?r.sources.map(x=>'<p><a href="'+esc(x.url)+'" target="_blank" rel="noreferrer">'+esc(x.title)+' ↗</a></p>').join(''):'<p>本次未返回可核对引用，不能据此认定发现了真实项目。</p>'):'<p>尚未查询。登录与检查模型不会自动运行搜索。</p>');
+ $('#groklogin').disabled=g.busy||!!g.login;$('#grokcheck').disabled=g.busy||(!g.loggedIn&&!g.keyReady);$('#grokrun').disabled=!currentBackend||g.busy||!g.models.length||Date.now()<g.nextRun;$('#grokkey').disabled=g.busy;$('#grokcancel').hidden=!(currentBackend&&g.busy&&g.operation==='research');
+ const r=g.result,feedback=!currentBackend?'<p class="notice">后台尚未加载搜索修复。请点左下角“停止并退出软件”，然后重新打开并登录 Grok；只关闭窗口不会更新后台。更新前已暂停查询，避免继续按旧的 60 秒限制请求。</p>':pending?'<p role="status">'+esc(pending)+'。最长等待 5 分钟；可以取消，本次不会自动重试。</p>':g.error?'<p class="notice">本次请求失败：'+esc(g.error)+'。这不代表没有早期项目。</p>':'';
+ setCards('#grokresult',feedback+(r?'<h3>最近成功查询结果</h3><small>'+esc(when(r.at))+' · '+esc(r.model)+' · '+(r.mode==='key'?'API Key':'订阅通道')+'</small><div class="grok-answer">'+esc(r.text)+'</div><h4>返回的引用来源</h4>'+(r.sources.length?r.sources.map(x=>'<p><a href="'+esc(x.url)+'" target="_blank" rel="noreferrer">'+esc(x.title)+' ↗</a></p>').join(''):'<p>本次未返回可核对引用，不能据此认定发现了真实项目。</p>'):feedback?'':'<p>尚未查询。登录与检查模型不会自动运行搜索。</p>'));
 }
 bind('#groklogin',async()=>{await api('grok/login',{});say('登录码已生成。请点击下方“打开 xAI 官方授权页面”完成登录。');});
 bind('#groklogout',()=>api('grok/logout',{}));
+bind('#grokcancel',async()=>{await api('grok/cancel',{});say('已请求取消本次搜索，保留登录；已发出的查询可能仍计入额度。');});
 bind('#grokcheck',()=>api('grok/check',{}));
 bind('#grokrun',()=>api('grok/research',{model:$('#grokmodel').value,query:$('#grokquery').value,confirm:true}));
 bind('#grokkey',async()=>{dialog('独立 xAI API Key','<p>这个通道独立计费，不使用 X Premium 订阅额度。保存后只在本次后台内存使用；不会自动请求模型或搜索，也不会从订阅失败时自动切换过来。</p><label>API Key<input id="grokkeyinput" type="password" autocomplete="off" placeholder="只在本机填写"></label><label><input type="checkbox" id="grokpaid">我知道这个通道独立计费</label><label><input type="checkbox" id="grokclear">清除凭据并退出连接</label>',async()=>{const key=$('#grokkeyinput').value.trim();$('#grokkeyinput').value='';await api('grok/key',{key,confirmPaid:$('#grokpaid').checked,clear:$('#grokclear').checked});},'保存');});
