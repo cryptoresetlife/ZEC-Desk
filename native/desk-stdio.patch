@@ -1,0 +1,35 @@
+diff --git a/zingo-cli/src/lib.rs b/zingo-cli/src/lib.rs
+index 09498ed..f4963e7 100644
+--- a/zingo-cli/src/lib.rs
++++ b/zingo-cli/src/lib.rs
+@@ -605,6 +605,30 @@ pub(crate) fn startup(filled_template: &ConfigTemplate) -> std::io::Result<Comma
+ 
+ fn dispatch_command_or_start_interactive(cli_config: &ConfigTemplate) -> std::io::Result<()> {
+     let ch = startup(cli_config)?;
++    // ZEC Desk transport: bounded JSON lines over a private child-process pipe.
++    // Wallet/transaction construction stays in the pinned upstream implementation.
++    if let ModeOfOperation::Command { name, .. } = &cli_config.mode {
++        if name == "desk_stdio" {
++            use std::io::{BufRead, Write};
++            println!("ZEC_DESK_READY");
++            std::io::stdout().flush()?;
++            for line in std::io::stdin().lock().lines() {
++                let line = line?;
++                if line.len() > 16384 { break; }
++                let request = match json::parse(&line) { Ok(v) => v, Err(_) => break };
++                let cmd = request["command"].as_str().unwrap_or("");
++                let allowed = ["info", "height", "addresses", "balance", "spendable_balance", "sync", "send", "confirm", "save", "quit", "recovery_info", "value_transfers"];
++                if !allowed.contains(&cmd) { break; }
++                let args: Vec<String> = request["args"].members().filter_map(|v| v.as_str().map(str::to_owned)).collect();
++                ch.transmitter.send((cmd.to_string(), args)).map_err(std::io::Error::other)?;
++                let response = ch.receiver.recv().map_err(std::io::Error::other)?;
++                println!("ZEC_DESK_JSON:{}", json::object! { "id" => request["id"].clone(), "result" => response }.dump());
++                std::io::stdout().flush()?;
++                if cmd == "quit" { break; }
++            }
++            return Ok(());
++        }
++    }
+     match &cli_config.mode {
+         ModeOfOperation::Interactive => start_interactive(cli_config, ch),
+         ModeOfOperation::Command { name, args } => {
