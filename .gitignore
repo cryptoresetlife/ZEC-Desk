@@ -22,3 +22,9 @@ native/SHA256SUMS.txt
 
 native/wallet-lock
 *.app/
+backups/
+profiles/
+*.seed
+*.mnemonic
+*.sqlite*
+*.db

@@ -17,6 +17,16 @@ test('native scan ranges determine completeness including an empty-output range'
  assert.equal(walletScanComplete({...done,sync_start_height:0}),false);
  assert.equal(walletScanComplete({...done,scan_ranges:[{priority:'Verify'}],percentage_total_outputs_scanned:100}),false);
  assert.equal(walletScanComplete({percentage_total_outputs_scanned:100}),false);
+ assert.equal(walletScanComplete({...done,scan_ranges:[]}),false);
+});
+test('conflicting roots and missing checkpoints pause retry instead of reporting a network failure',async()=>{
+ for(const [raw,code] of [['Error: shard tree error\ncaused by: Inserted root conflicts with existing root at address Address { level: Level(2), index: 129180 }','tree-conflict'],['Error: missing Ironwood shard tree checkpoints. wallet data cleared. rescan required.','rescan-required']]){
+  const {w,calls}=wallet(syncFailure(raw));await w.syncTick();
+  assert.equal(w.syncBlocked,true);assert.equal(w.view.syncCode,code);assert.equal(w.view.syncRetryAt,0);
+  assert.match(w.view.syncError,/备份/);assert(!w.view.syncError.includes('129180'));
+  await w.syncTick();assert.equal(calls.filter(x=>x[1]==='poll').length,1);
+  await assert.rejects(w.check('u1fixture'),/扫描/);
+ }
 });
 test('v6 readiness uses height without obsolete argument and checks chain freshness',async()=>{
  const w=new Wallet('fixture'),calls=[];

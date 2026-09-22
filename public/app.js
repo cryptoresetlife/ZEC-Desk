@@ -1,11 +1,13 @@
 import {setupNoir} from './noir-ui.js';
+import {setupIntelligence} from './intelligence.js';
+import {setupSweep} from './sweep.js';
 const $=s=>document.querySelector(s),token=$('meta[name=session-token]').content;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const when=t=>t?new Date(t).toLocaleString('zh-CN',{timeZoneName:'short'}):'未设置';
 let state=null,preview=null,dialogAction=null,dialogVersion=0,mutating=false;
 function say(t){$('#message').hidden=!t;$('#message').textContent=t||'';}
 async function api(path,data){let r;try{r=await fetch('/api/'+path,{method:data===undefined?'GET':'POST',...(data===undefined?{signal:AbortSignal.timeout(8000)}:path.startsWith('grok/')?{signal:AbortSignal.timeout(path==='grok/research'?330000:75000)}:{}),headers:{'x-zec-desk':token,'content-type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});}catch(e){if(path.startsWith('grok/')&&e.name==='TimeoutError')throw Error('等待 Grok 查询超时；后台状态会继续刷新，请勿连续提交，已发出的查询可能计入额度');throw e;}const d=await r.json();if(!r.ok)throw new Error(d.error||'操作失败');return d;}
-function bind(id,fn){$(id).onclick=async()=>{if(mutating&&!['#stop','#groklogout','#grokcancel'].includes(id))return;const btn=$(id);mutating=true;btn.disabled=true;say('处理中…');try{await fn();if($('#message').textContent==='处理中…')say('操作完成');await refresh();}catch(e){say(e.message);}finally{mutating=false;btn.disabled=false;}};}
+function bind(id,fn){$(id).onclick=async()=>{if(mutating&&!['#stop','#sweepstop','#groklogout','#grokcancel'].includes(id))return;const btn=$(id);mutating=true;btn.disabled=true;say('处理中…');try{await fn();if($('#message').textContent==='处理中…')say('操作完成');await refresh();}catch(e){say(e.message);}finally{mutating=false;btn.disabled=false;}};}
 function dialog(title,content,action,confirm='确认'){dialogVersion++;$('#dialogtitle').textContent=title;$('#dialogbody').innerHTML=content;dialogAction=action;$('#dialogconfirm').textContent=confirm;$('#dialogconfirm').hidden=!action;if(!$('#dialog').open)$('#dialog').showModal();}
 function clearDialog(){dialogVersion++;$('#dialogbody').textContent='';dialogAction=null;}
 function closeDialog(){clearDialog();$('#dialog').close();}
@@ -71,6 +73,8 @@ function paintMarket(p){if(!p)return;paintAlerts(p);const snap=p.snapshot;const 
 }
 for(const area of ['#marketlist','#watchlist'])$(area).addEventListener('click',async e=>{const btn=e.target.closest('button[data-collect],button[data-remove]');if(!btn||btn.disabled)return;btn.disabled=true;try{if(btn.dataset.collect)await api('projects/add',{collectionId:btn.dataset.collect});else await api('projects/remove',{id:btn.dataset.remove});await refresh();say(btn.dataset.collect?'已加入自选项目':'已移除自选');}catch(err){say(err.message);}finally{btn.disabled=false;}});
 function paint(s){
+ paintIntelligence(s.intelligence);
+ paintSweep(s.sweep,s.wallet);
  paintNoir(s);paintQuickSite(s);
  paintSocial(s.social);paintGrok(s.grok);
  paintLaunches(s.launches);
@@ -87,7 +91,7 @@ function paint(s){
  const addresses=s.wallet.addresses||[],selected=$('#address').value;
  if(JSON.stringify(addresses)!==$('#address').dataset.list){$('#address').innerHTML=addresses.length?addresses.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join(''):'<option value="">先启动钱包</option>';$('#address').dataset.list=JSON.stringify(addresses);if(addresses.includes(selected))$('#address').value=selected;}
  $('#walletaddresscopy').disabled=!s.wallet.ready||!addresses.includes($('#address').value);
- $('#walletfunds').textContent='可用屏蔽余额：'+(Number.isSafeInteger(s.wallet.spendable)?s.wallet.spendable/1e8+' ZEC':'—');
+ $('#walletfunds').textContent=!s.wallet.ready?'可用屏蔽余额：钱包未连接':s.wallet.syncError?'可用屏蔽余额：暂未核实（同步异常）':!s.wallet.syncComplete?'可用屏蔽余额：正在同步，完成后显示':'可用屏蔽余额：'+(Number.isSafeInteger(s.wallet.spendable)?s.wallet.spendable/1e8+' ZEC':'暂未核实');
  const syncProgress=typeof s.wallet.sync?.percentage_total_outputs_scanned==='number'?s.wallet.sync.percentage_total_outputs_scanned:null;
  const syncText=s.wallet.syncError?s.wallet.syncError+(s.wallet.syncRetryAt?' · 下次重试 '+when(s.wallet.syncRetryAt):''):s.wallet.syncComplete?'钱包扫描已完成；预检时还会核对最新区块和可用余额。':syncProgress!==null?'钱包扫描进度：'+syncProgress.toFixed(1)+'% · 已扫描 '+(s.wallet.sync.total_blocks_scanned||0)+' 个区块 · 每 20 秒刷新。':'钱包尚未连接。连接后自动同步。';
  $('#walletsync').textContent=syncText;
@@ -110,6 +114,8 @@ function paintLaunches(r){
  setCards('#launchplans',r.plans.map(p=>'<article><h3>'+esc(p.name)+'</h3><p>'+(p.status==='needs-budget'?'待设置预算并启动':'等待适配：目前仅监控，未启动自动付款')+'</p><div class="row"><a href="'+esc(p.url)+'" target="_blank" rel="noreferrer">打开官网 ↗</a>'+(p.id==='zaddr'?'<button data-launch-mint="zaddr">设置自动 mint</button>':'')+taskButton(p.url,p.name)+'<button class="ghost" data-launch-remove="'+esc(p.id)+'">移除计划</button></div></article>').join('')||'<p>暂无待开售计划。</p>');
  setCards('#launchevents',r.events.map(e=>'<p>'+esc(when(e.at))+' · '+esc(e.text)+'</p>').join('')||'<p>首次读取作为基准；后续官网规则变化显示在这里。</p>');
 }
+const paintSweep=setupSweep({$,esc,api,bind,dialog,say,when});
+const paintIntelligence=setupIntelligence({$,esc,api,bind,dialog,say,refresh,setCards,thumb,when,taskButton});
 bind('#launchrefresh',()=>api('scan',{}));
 for(const id of ['#launchfilter','#launchsearch'])$(id).addEventListener('input',()=>{if(state?.launches)paintLaunches(state.launches);});
 for(const area of ['#launchlist','#launchplans'])$(area).addEventListener('click',async e=>{
@@ -198,7 +204,7 @@ document.addEventListener('zec-desk-noir-address',e=>{const address=e.detail?.ad
 paintProjectTasks();
 
 document.addEventListener('click',e=>{const link=e.target.closest('[data-wallet-route]');if(link){$('#dialog').close();showPage(link.dataset.walletRoute);}});
-const pages={noirmint:['开始 mint','确认项目、连接钱包、设置预算，在一个页面完成。'],radar:['发现项目','查看开售与早期资格线索，选中后再操作。'],favorites:['我的自选','关注项目变化，按需设置提醒。'],projecttasks:['做项目任务','选好钱包地址，在项目官网完成任务。'],tasks:['运行记录','查看付款尝试与项目发放结果。'],social:['推特早期项目','查找公开线索，核对来源后加入自选。'],markets:['市场监控','查看公开挂牌与系列变化。'],wallet:['独立钱包','Zingo 全自动付款使用的钱包，与 Noir 分开。'],mint:['Zingo 全自动 mint','使用软件独立钱包，预检并确认预算后启动。']};
+const pages={sweep:['ZADDR 低价扫货','自己设置价格、总预算和数量，确认后自动购买。'],noirmint:['开始 mint','确认项目、连接钱包、设置预算，在一个页面完成。'],radar:['发现项目','查看开售与早期资格线索，选中后再操作。'],favorites:['我的自选','关注项目变化，按需设置提醒。'],projecttasks:['做项目任务','选好钱包地址，在项目官网完成任务。'],tasks:['运行记录','查看付款尝试与项目发放结果。'],social:['推特早期项目','查找公开线索，核对来源后加入自选。'],markets:['市场监控','查看公开挂牌与系列变化。'],wallet:['独立钱包','Zingo 全自动付款使用的钱包，与 Noir 分开。'],mint:['Zingo 全自动 mint','使用软件独立钱包，预检并确认预算后启动。']};
 function showPage(id,writeHash=true){
  if(!pages[id])id='noirmint';
  for(const section of document.querySelectorAll('main > section'))section.hidden=section.id!==id;

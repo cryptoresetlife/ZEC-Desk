@@ -1,5 +1,12 @@
 # Build
 
+## Windows desktop exit
+
+Build both executables with `scripts/build-windows.ps1 -DependencyRoot <runtime-and-WebView2-folder> -OutputDirectory <output-folder>`.
+Closing the main window or choosing the tray quit action uses the authenticated exit route after verifying the folder identity. Busy wallet/payment operations keep the window open; HTTP timeouts never kill processes. New mutations are rejected during shutdown. Minimize the desktop window to keep tasks running.
+
+Validation: the native shutdown handshake rejects foreign instances, missing tokens and busy responses. Closing the real desktop window released port 8793 and both desktop processes. Relaunch succeeded without a conflict; no wallet or payment was active during testing.
+
 ## Node.js
 
 Use Node.js 24 (Windows release bundles official Node.js 24.19.0 x64). No npm dependencies are required. Run `node --test tests/*.test.mjs` before packaging. Run `node server.mjs` for the browser interface.

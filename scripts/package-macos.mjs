@@ -9,7 +9,7 @@ const name=`ZEC-Desk-v${version}-macOS-${process.arch}`,out=path.join(root,'rele
 await fs.mkdir(path.join(root,'release'),{recursive:true});
 await fs.mkdir(out,{recursive:false});
 const app=path.join(out,'ZEC Desk.app'),contents=path.join(app,'Contents'),dst=path.join(contents,'Resources','app');
-const fixed=['README.md','使用说明.md','BUILD.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md','LICENSE','package.json','server.mjs','runtime/node','runtime/NODE-LICENSE.txt','native/zingo-deskwallet','native/nym-proxy','native/wallet-lock','native/desk-stdio.patch','native/ZINGO-LICENSE.txt','native/NYM-APACHE-2.0.txt','public/index.html','public/app.js','public/style.css','public/favicon.svg','public/noir-provider.js','public/noir-ui.js','launcher/macos-launcher.mjs'];
+const fixed=['README.md','INTELLIGENCE.md','使用说明.md','BUILD.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md','LICENSE','package.json','server.mjs','runtime/node','runtime/NODE-LICENSE.txt','native/zingo-deskwallet','native/nym-proxy','native/wallet-lock','native/desk-stdio.patch','native/ZINGO-LICENSE.txt','native/NYM-APACHE-2.0.txt','public/index.html','public/app.js','public/intelligence.js','public/sweep.js','public/style.css','public/favicon.svg','public/noir-provider.js','public/noir-ui.js','launcher/macos-launcher.mjs'];
 for(const e of await fs.readdir(path.join(root,'lib'),{withFileTypes:true}))if(e.isFile()&&e.name.endsWith('.mjs'))fixed.push('lib/'+e.name);
 for(const file of fixed){const dest=path.join(dst,file);await fs.mkdir(path.dirname(dest),{recursive:true});await fs.copyFile(path.join(root,file),dest);}
 for(const file of ['runtime/node','native/zingo-deskwallet','native/nym-proxy','native/wallet-lock']){

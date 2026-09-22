@@ -13,6 +13,8 @@ import {Engine,validateConfig,zats} from './lib/engine.mjs';
 import {scanSource,publicUrl} from './lib/discovery.mjs';
 import {ProjectMonitor} from './lib/market.mjs';
 import {LaunchRadar} from './lib/launches.mjs';
+import {Intelligence} from './lib/intelligence.mjs';
+import {Sweep,MarketAPI} from './lib/sweep.mjs';
 import {SocialScanner} from './lib/social.mjs';
 import {GrokConnection} from './lib/grok.mjs';
 const root=dirname(fileURLToPath(import.meta.url)),port=Number(process.env.ZEC_DESK_PORT||8793),origin=`http://127.0.0.1:${port}`,token=randomBytes(32).toString('hex');
@@ -23,11 +25,15 @@ try{journal=JSON.parse(await fs.readFile(join(data,'journal.json'),'utf8'));if(j
 let writes=Promise.resolve();
 function persist(){const body=JSON.stringify(journal,null,2);writes=writes.then(async()=>{const tmp=join(data,'journal.tmp');await fs.writeFile(tmp,body,{mode:0o600});const fd=openSync(tmp,'r+');try{fsyncSync(fd);}finally{closeSync(fd);}await fs.rename(tmp,join(data,'journal.json'));});return writes;}
 const site=new Zaddr(),wallet=new Wallet(root),engine=new Engine({site,wallet,journal,persist});await persist();
-const noir=new NoirPayments({site,journal,persist,otherBusy:()=>engine.active||engine.busy});
+const noir=new NoirPayments({site,journal,persist,otherBusy:()=>engine.active||engine.busy||sweep.active||sweep.busy||sweep.unresolved()});
 const projects=new ProjectMonitor(journal,persist);
 const launches=new LaunchRadar(journal,persist);
+const intelligence=new Intelligence(journal,persist);
 const social=new SocialScanner(journal,persist);
 const grok=new GrokConnection();
+const sweep=new Sweep({market:new MarketAPI(site),wallet,journal,persist,backedUp:backupMatches,otherBusy:()=>engine.active||engine.busy||noir.busy||journal.tasks.some(t=>['sending','unknown','broadcast'].includes(t.status))});
+await persist();
+const sweepTimer=setInterval(()=>{if(!closing)void sweep.tick().catch(()=>{sweep.active=false;sweep.error='记录保存失败，已停止自动扫货';});},1500);
 const grokTimer=setInterval(()=>{void grok.tick().catch(()=>{});},1000);
 let backupShownFor='';
 function walletIdentity(){return wallet.ready&&wallet.view.addresses?.[0]||'';}
@@ -43,7 +49,7 @@ async function scan(){
       try{items.push(...await scanSource(source));}
       catch{items.push({name:new URL(source).hostname,url:source,kind:'读取失败，请核对来源'});}
     }};
-    await Promise.all([worker(),worker(),worker()]);candidates=items;lastScan=Date.now();
+    await Promise.all([worker(),worker(),worker()]);candidates=items;intelligence.discovered=items.filter(x=>x.earlySignals?.length);lastScan=Date.now();
   }finally{scanBusy=false;}
 }
 const interval=setInterval(async()=>{
@@ -53,8 +59,9 @@ const interval=setInterval(async()=>{
 const scanner=setInterval(()=>{if(scanning&&!closing)void scan();},30000);
 const marketTimer=setInterval(()=>{if(projects.due()&&!closing)void projects.refresh().catch(()=>{projects.error='项目记录保存失败，请检查磁盘';});},15000);
 const socialTimer=setInterval(()=>{if(!closing)void social.tick().catch(()=>{social.error='X 扫描未完成，请检查设置';});},60000);
+const intelligenceTimer=setInterval(()=>{if(!closing&&intelligence.due())void intelligence.refresh().catch(()=>{});},15000);
 if(journal.watch.enabled)void projects.refresh().catch(()=>{projects.error='项目记录保存失败，请检查磁盘';});
-const syncer=setInterval(()=>{if(wallet.ready&&!engine.busy&&!closing)void wallet.syncTick().catch(()=>{wallet.view={...wallet.view,syncError:'读取钱包同步状态失败，请检查网络后刷新'};});},20000);
+const syncer=setInterval(()=>{if(wallet.ready&&!engine.busy&&!sweep.busy&&!closing)void wallet.syncTick().catch(()=>{wallet.view={...wallet.view,syncError:'读取钱包同步状态失败，请检查网络后刷新'};});},20000);
 const instanceId=createHash('sha256').update(resolve(root).replace(/[\\/]+$/,'').toLowerCase()).digest('hex');
 function json(res,status,obj){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(JSON.stringify(obj));}
 async function body(req){let b='';for await(const chunk of req){b+=chunk;if(b.length>16384)throw new Error('请求过大');}try{return JSON.parse(b||'{}');}catch{throw new Error('请求格式错误');}}
@@ -69,15 +76,27 @@ const server=http.createServer(async(req,res)=>{
       if(req.method!=='GET')return json(res,405,{});
       const art=path.match(/^\/zaddr\/([1-9]\d{0,3})\.svg$/);
       if(art&&Number(art[1])<=2800){res.setHeader('content-type','image/svg+xml');res.setHeader('cache-control','private, max-age=86400');res.end(await fs.readFile(join(root,'public','zaddr',art[1]+'.svg')));return;}
-      const files={'/':'index.html','/app.js':'app.js','/noir-provider.js':'noir-provider.js','/noir-ui.js':'noir-ui.js','/style.css':'style.css','/favicon.svg':'favicon.svg'};
+      const files={'/':'index.html','/app.js':'app.js','/intelligence.js':'intelligence.js','/sweep.js':'sweep.js','/noir-provider.js':'noir-provider.js','/noir-ui.js':'noir-ui.js','/style.css':'style.css','/favicon.svg':'favicon.svg'};
       if(!files[path])return json(res,404,{});
       let source=await fs.readFile(join(root,'public',files[path]),'utf8');if(path==='/')source=source.replace('__SESSION_TOKEN__',token);
       res.setHeader('content-type',path.endsWith('.js')?'text/javascript; charset=utf-8':path.endsWith('.css')?'text/css; charset=utf-8':path.endsWith('.svg')?'image/svg+xml':'text/html; charset=utf-8');res.end(source);return;
     }
     if(!localRequestAllowed(req.headers,token,port))return json(res,403,{error:'请从本机软件窗口操作'});
-    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.3.0',platform:process.platform,grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
+    if(path==='/api/state'&&req.method==='GET')return json(res,200,{version:'0.3.0',platform:process.platform,sweep:sweep.view(),intelligence:intelligence.view(site.view()),grok:grok.view(),social:social.view(),launches:launches.view({site:site.view(),projects:projects.view(),candidates,scanError,scanning}),projects:projects.view(),site:site.view(),wallet:wallet.view,scanning,scanBusy,lastScan,candidates,scanError,sources:journal.sources,backedUp:backupMatches(),tasks:journal.tasks,active:engine.active,busy:engine.busy});
+    if(closing)return json(res,409,{error:'软件正在退出，请等待后台结束后再启动'});
     if(req.method!=='POST')return json(res,405,{});
     const b=await body(req);
+    if(path==='/api/sweep/refresh'){await sweep.refresh();return json(res,200,{ok:true});}
+    if(path==='/api/sweep/preview')return json(res,200,await sweep.preview(b));
+    if(path==='/api/sweep/arm'){await sweep.arm(b.id,b.confirm);return json(res,200,{ok:true});}
+    if(path==='/api/sweep/stop'){await sweep.stop();return json(res,200,{ok:true});}
+    if(path==='/api/sweep/reconcile'){await sweep.reconcile();return json(res,200,{ok:true});}
+    if(['/api/preview','/api/arm','/api/wallet/start','/api/wallet/backup'].includes(path)&&(sweep.active||sweep.busy||sweep.unresolved()))throw Error('请先停止扫货任务并核对未确认的付款');
+    if(path==='/api/wallet/status'&&sweep.busy)throw Error('扫货正在核对付款，请稍后刷新');
+    if(path==='/api/intelligence/refresh'){void intelligence.refresh().catch(()=>{});return json(res,200,{ok:true});}
+    if(path==='/api/intelligence/enabled'){await intelligence.enable(b.enabled);if(b.enabled)void intelligence.refresh().catch(()=>{});return json(res,200,{ok:true});}
+    if(path==='/api/intelligence/schedule'){await intelligence.saveSchedule(b);return json(res,200,{ok:true});}
+    if(path==='/api/intelligence/remove'){await intelligence.removeSchedule(b.id);return json(res,200,{ok:true});}
     if(path==='/api/noir/quote')return json(res,200,await noir.quote(b));
     if(path==='/api/noir/begin')return json(res,200,await noir.begin(b.id));
     if(path==='/api/noir/report')return json(res,200,await noir.report(b.taskId,b.txid));
@@ -130,8 +149,8 @@ const server=http.createServer(async(req,res)=>{
     }
     if(path==='/api/stop'){await engine.stop();return json(res,200,{ok:true});}
     if(path==='/api/exit'){
-      if(engine.busy||wallet.starting||noir.busy)throw new Error('正在启动钱包、核对或发送交易，请等本次操作结束再退出');
-      closing=true;grok.logout();clearInterval(grokTimer);social.stop();await engine.stop();await wallet.close();json(res,200,{ok:true});clearInterval(interval);clearInterval(scanner);clearInterval(syncer);clearInterval(marketTimer);clearInterval(socialTimer);server.close();setTimeout(()=>process.exit(0),500);return;
+      if(engine.busy||sweep.busy||wallet.starting||noir.busy)throw new Error('正在启动钱包、核对或发送交易，请等本次操作结束再退出');
+      closing=true;clearInterval(sweepTimer);await sweep.stop();clearInterval(intelligenceTimer);grok.logout();clearInterval(grokTimer);social.stop();await engine.stop();await wallet.close();json(res,200,{ok:true});clearInterval(interval);clearInterval(scanner);clearInterval(syncer);clearInterval(marketTimer);clearInterval(socialTimer);server.close();setTimeout(()=>process.exit(0),500);return;
     }
     return json(res,404,{error:'接口不存在'});
   }catch(e){json(res,400,{error:e.message||'操作未完成'});}
