@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Net.NetworkInformation;
+using System.Threading.Tasks;
 class ZecDeskLauncher {
   static string Root=AppDomain.CurrentDomain.BaseDirectory;
   static string Url="http://127.0.0.1:8793/";
@@ -30,6 +31,32 @@ class ZecDeskLauncher {
       using(var response=r.GetResponse())using(var s=new StreamReader(response.GetResponseStream()))return Classify(s.ReadToEnd());
     }catch(WebException e){return e.Status==WebExceptionStatus.ConnectFailure?0:e.Status==WebExceptionStatus.ProtocolError?2:3;}catch{return 3;}
   }
+  // Use the same authenticated graceful-exit route as the page. Never kill a
+  // process by port or shut down a backend belonging to another installation.
+  internal static string Shutdown(){
+    try{
+      int state=Probe();if(state==0)return null;
+      if(state!=1)return "后台不属于当前文件夹或暂时无法核实，未关闭其他程序。请稍后重试。";
+      var page=(HttpWebRequest)WebRequest.Create(Url);page.Proxy=null;page.Timeout=5000;page.ReadWriteTimeout=5000;page.AllowAutoRedirect=false;
+      string html;using(var response=page.GetResponse())using(var reader=new StreamReader(response.GetResponseStream()))html=reader.ReadToEnd();
+      var match=Regex.Match(html,"name=\"session-token\" content=\"([a-f0-9]{64})\"");
+      if(!match.Success||Probe()!=1)return "无法核实退出凭据，请在软件左下角点击停止并退出。";
+      var request=(HttpWebRequest)WebRequest.Create(Url+"api/exit");request.Proxy=null;request.Timeout=75000;request.ReadWriteTimeout=75000;request.AllowAutoRedirect=false;
+      request.Method="POST";request.ContentType="application/json";request.Headers["x-zec-desk"]=match.Groups[1].Value;request.Headers["Origin"]=new Uri(Url).GetLeftPart(UriPartial.Authority);
+      byte[] payload=Encoding.UTF8.GetBytes("{}");request.ContentLength=payload.Length;
+      using(var stream=request.GetRequestStream())stream.Write(payload,0,payload.Length);
+      using(var response=request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream())){
+        if(!Regex.IsMatch(reader.ReadToEnd(),"\"ok\"\\s*:\\s*true"))return "后台尚未确认退出，请稍后重试。";
+      }
+      for(int i=0;i<40;i++){if(Probe()==0)return null;Thread.Sleep(250);}
+      return "正在等待后台释放端口。请稍后再关闭窗口；不会强行结束钱包。";
+    }catch(WebException e){
+      if(Probe()==0)return null;
+      var response=e.Response as HttpWebResponse;
+      if(response!=null&&response.StatusCode==HttpStatusCode.BadRequest)return "正在启动钱包、核对或发送交易，暂时不能退出。请等待当前操作结束后再关闭。";
+      return "后台尚未完成退出，请稍后重试或使用左下角停止并退出。钱包进程未被强行结束。";
+    }catch{return "无法完成正常退出，请稍后重试；没有强行结束钱包。";}
+  }
   static void Open(){
     var window=Path.Combine(Root,"ZecDeskWindow.exe");
     if(!File.Exists(window))throw new Exception("缺少 ZecDeskWindow.exe，请完整解压新版安装包。");
@@ -49,7 +76,8 @@ class ZecDeskLauncher {
       if(Probe()!=1)throw new Exception("本机服务未就绪或后台不属于当前文件夹，请检查 8793 端口。");
       Open();
       var tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,Text="ZEC Desk · 双击打开",Visible=true};
-      tray.DoubleClick+=(s,e)=>Open();var menu=new ContextMenu();menu.MenuItems.Add("打开 ZEC Desk",(s,e)=>Open());menu.MenuItems.Add("退出方法：在软件左下角点击停止并退出",(s,e)=>Open());tray.ContextMenu=menu;
+      tray.DoubleClick+=(s,e)=>Open();var menu=new ContextMenu();menu.MenuItems.Add("打开 ZEC Desk",(s,e)=>Open());
+      var quit=new MenuItem("停止任务并退出 ZEC Desk");quit.Click+=async(s,e)=>{quit.Enabled=false;string error=await Task.Run(()=>Shutdown());if(error!=null){MessageBox.Show(error,"ZEC Desk · 退出未完成",MessageBoxButtons.OK,MessageBoxIcon.Information);quit.Enabled=true;}else{tray.Visible=false;Application.Exit();}};menu.MenuItems.Add(quit);tray.ContextMenu=menu;
       var timer=new System.Windows.Forms.Timer{Interval=1000};timer.Tick+=(s,e)=>{if(Child.HasExited){tray.Visible=false;Application.Exit();}};timer.Start();Application.Run();tray.Dispose();
     }catch(Exception e){MessageBox.Show(e.Message,"ZEC Desk",MessageBoxButtons.OK,MessageBoxIcon.Error);}
   }

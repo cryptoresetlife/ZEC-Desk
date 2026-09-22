@@ -15,7 +15,7 @@ class ZecDeskWindow : Form {
   const string Home="http://127.0.0.1:8793/";
   WebView2 view;
   bool checking;
-  int unavailable;
+  bool allowClose,closePending;
   readonly Timer timer=new Timer { Interval=3000 };
   [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
   static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
@@ -45,9 +45,18 @@ class ZecDeskWindow : Form {
       if(checking)return;checking=true;
       try{
         int state=await Task.Run(()=>ZecDeskLauncher.Probe());
-        if(state==1)unavailable=0;
-        else if(state==2||state==0||++unavailable>=3){timer.Stop();Close();}
+        if(IsDisposed||closePending)return;
+        if(state==2||state==0){timer.Stop();allowClose=true;Close();}
       }finally{checking=false;}
+    };
+    FormClosing+=async(s,e)=>{
+      if(allowClose)return;
+      e.Cancel=true;if(closePending)return;closePending=true;timer.Stop();
+      Text="ZEC Desk · 正在停止任务并退出…";Enabled=false;
+      string error=await Task.Run(()=>ZecDeskLauncher.Shutdown());
+      if(IsDisposed)return;
+      if(error==null){allowClose=true;Close();}
+      else{closePending=false;Enabled=true;Text="ZEC Desk";timer.Start();MessageBox.Show(this,error,"ZEC Desk · 退出未完成",MessageBoxButtons.OK,MessageBoxIcon.Information);}
     };
     FormClosed+=(s,e)=>{timer.Stop();timer.Dispose();view.Dispose();};
   }
@@ -78,7 +87,7 @@ class ZecDeskWindow : Form {
       view.CoreWebView2.DownloadStarting+=(s,e)=>{e.Cancel=true;};
       view.CoreWebView2.Navigate(Home);timer.Start();
     }catch(Exception){
-      MessageBox.Show("独立窗口启动失败。请确认已完整解压，且电脑已安装 Microsoft Edge WebView2 Runtime。后台任务不会因此停止。","ZEC Desk",MessageBoxButtons.OK,MessageBoxIcon.Information);
+      MessageBox.Show("独立窗口启动失败。请确认已完整解压，且电脑已安装 Microsoft Edge WebView2 Runtime。接下来会尝试正常退出当前后台。","ZEC Desk",MessageBoxButtons.OK,MessageBoxIcon.Information);
       Close();
     }
   }
